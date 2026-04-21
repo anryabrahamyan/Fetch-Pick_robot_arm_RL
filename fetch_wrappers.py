@@ -41,10 +41,10 @@ class FetchFeatureWrapper(gym.ObservationWrapper):
         """
         Enhance observation by appending delta coordinates (not replacing).
         """
-        # Extract features from dict observation
-        observation = obs['observation'].astype(np.float32).copy()  # Ensure float32 & immutable
-        achieved_goal = obs['achieved_goal'].astype(np.float32)     # current object position (3D)
-        desired_goal = obs['desired_goal'].astype(np.float32)       # target object position (3D)
+        # Extract features from dict observation, ensuring float32 from the start
+        observation = np.asarray(obs['observation'], dtype=np.float32).copy()
+        achieved_goal = np.asarray(obs['achieved_goal'], dtype=np.float32)
+        desired_goal = np.asarray(obs['desired_goal'], dtype=np.float32)
 
         # Extract key positions from observation array
         # Index mapping (FetchPickAndPlace observation):
@@ -59,8 +59,8 @@ class FetchFeatureWrapper(gym.ObservationWrapper):
         goal_rel_obj = (desired_goal - object_pos).astype(np.float32)
 
         # 3. Distance to goal (scalar)
-        dist_to_goal = np.linalg.norm(desired_goal - achieved_goal).astype(np.float32)
-        dist_to_goal = np.array([dist_to_goal], dtype=np.float32)  # Convert to 1D array
+        dist_to_goal = float(np.linalg.norm(desired_goal - achieved_goal))
+        dist_to_goal = np.array([dist_to_goal], dtype=np.float32)
 
         # Append delta coordinates to original observation (do NOT replace)
         augmented_obs = np.concatenate([
@@ -68,9 +68,9 @@ class FetchFeatureWrapper(gym.ObservationWrapper):
             obj_rel_gripper,  # 3 appended: object-gripper delta
             goal_rel_obj,     # 3 appended: goal-object delta
             dist_to_goal      # 1 appended: distance to goal
-        ]).astype(np.float32)  # Shape: (32,)
+        ], dtype=np.float32)
 
-        # Return updated observation dict (immutable)
+        # Return updated observation dict
         obs_copy = obs.copy()
         obs_copy['observation'] = augmented_obs
         obs_copy['achieved_goal'] = achieved_goal
