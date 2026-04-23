@@ -38,7 +38,8 @@ gym.register_envs(gymnasium_robotics)
 from stable_baselines3 import SAC, TD3, DDPG, HerReplayBuffer
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.noise import NormalActionNoise
-from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize, DummyVecEnv
+from stable_baselines3.common.vec_env import SubprocVecEnv, DummyVecEnv
+# from stable_baselines3.common.vec_env import VecNormalize  # Disabled
 
 import imageio
 from torch.utils.tensorboard import SummaryWriter
@@ -52,9 +53,9 @@ LOG_DIR     = os.path.join(PROJECT_DIR, 'logs')
 MODEL_DIR   = os.path.join(PROJECT_DIR, 'models')
 VIDEO_DIR   = os.path.join(PROJECT_DIR, 'videos')
 TB_LOG_DIR  = os.path.join(PROJECT_DIR, 'tb_logs')
-NORM_DIR    = os.path.join(PROJECT_DIR, 'normalization')
+# NORM_DIR    = os.path.join(PROJECT_DIR, 'normalization')  # Disabled - no normalization
 
-for d in [LOG_DIR, MODEL_DIR, VIDEO_DIR, TB_LOG_DIR, NORM_DIR]:
+for d in [LOG_DIR, MODEL_DIR, VIDEO_DIR, TB_LOG_DIR]:
     os.makedirs(d, exist_ok=True)
 
 # ==================== CONFIGURATION ====================
@@ -66,7 +67,7 @@ SEEDS = [42, 120]
 N_ENVS = 8
 
 USE_FEATURE_WRAPPER = True
-USE_VEC_NORMALIZE = True
+USE_VEC_NORMALIZE = False
 
 HER_KWARGS = dict(n_sampled_goal=8, goal_selection_strategy='future')
 
@@ -203,14 +204,14 @@ def main():
         print(f"\n2. With FetchFeatureWrapper (delta coordinates APPENDED):\n   Obs space: {wrapped_env.observation_space}\n   Obs 'observation' shape: {obs['observation'].shape}\n   ✓ Original features: 25 (indices 0:25)\n   ✓ obj_rel_gripper: 3 (indices 25:28)\n   ✓ goal_rel_obj: 3 (indices 28:31)\n   ✓ dist_to_goal: 1 (index 31)\n   ✓ Total: 25 + 7 = 32 features")
         wrapped_env.close()
 
-        # Test 3: With VecNormalize
-        dummy_env_wrapped = DummyVecEnv([lambda: FetchFeatureWrapper(gym.make(ENV_ID))])
-        vec_normalized = VecNormalize(dummy_env_wrapped, norm_obs=True, norm_reward=False, clip_obs=10.0)
-        obs = vec_normalized.reset()
-        print(f"\n3. With FetchFeatureWrapper + VecNormalize:\n   Obs space (after norm): {vec_normalized.observation_space}\n   Obs dict keys: {list(obs.keys()) if isinstance(obs, dict) else 'N/A (array)'}")
-        if isinstance(obs, dict):
-            print(f"   Obs 'observation' shape: {obs['observation'].shape}\n   ✓ VecNormalize applied successfully\n   ✓ Observations normalized to N(0, 1)\n   ✓ Clipping enabled: [-10, 10]\n   ✓ Reward normalization: DISABLED (HER compatibility)")
-        vec_normalized.close()
+        # Test 3: VecNormalize disabled
+        # dummy_env_wrapped = DummyVecEnv([lambda: FetchFeatureWrapper(gym.make(ENV_ID))])
+        # vec_normalized = VecNormalize(dummy_env_wrapped, norm_obs=True, norm_reward=False, clip_obs=10.0)
+        # obs = vec_normalized.reset()
+        # print(f"\n3. With FetchFeatureWrapper + VecNormalize:\n   Obs space (after norm): {vec_normalized.observation_space}\n   Obs dict keys: {list(obs.keys()) if isinstance(obs, dict) else 'N/A (array)'}")
+        # if isinstance(obs, dict):
+        #     print(f"   Obs 'observation' shape: {obs['observation'].shape}\n   ✓ VecNormalize applied successfully\n   ✓ Observations normalized to N(0, 1)\n   ✓ Clipping enabled: [-10, 10]\n   ✓ Reward normalization: DISABLED (HER compatibility)")
+        # vec_normalized.close()
 
     print("\n" + "="*70 + "\n✓ All observation shapes validated successfully!\n" + "="*70)
 
@@ -249,18 +250,12 @@ def main():
 
                     train_env = SubprocVecEnv([make_fetch_env(ENV_ID, seed, i, wrapper=USE_FEATURE_WRAPPER) for i in range(N_ENVS)])
 
-                    if USE_VEC_NORMALIZE:
-                        train_env = VecNormalize(train_env, norm_obs=True, norm_reward=False, clip_obs=10.0)
-
                     eval_env = gym.make(ENV_ID, render_mode='rgb_array')
                     if USE_FEATURE_WRAPPER:
                         eval_env = FetchFeatureWrapper(eval_env)
 
                     eval_env_vec = DummyVecEnv([lambda env=eval_env: env])
-                    if USE_VEC_NORMALIZE:
-                        eval_env_vec_norm = VecNormalize(eval_env_vec, norm_obs=True, norm_reward=False, clip_obs=10.0)
-                    else:
-                        eval_env_vec_norm = eval_env_vec
+                    eval_env_vec_norm = eval_env_vec
 
                     log_path = os.path.join(LOG_DIR, f'{run_name}_eval.csv')
 
@@ -270,7 +265,7 @@ def main():
                         extra_kwargs['action_noise'] = NormalActionNoise(mean=np.zeros(n_actions), sigma=0.1 * np.ones(n_actions))
 
                     model_path = os.path.join(MODEL_DIR, run_name)
-                    norm_path = os.path.join(NORM_DIR, f'{run_name}_vecnorm')
+                    # norm_path = os.path.join(NORM_DIR, f'{run_name}_vecnorm')  # Disabled - no normalization
                     tb_run_dir = os.path.join(TB_LOG_DIR, run_name)
                     os.makedirs(tb_run_dir, exist_ok=True)
 
@@ -321,9 +316,6 @@ def main():
                     writer.close()
                     print(f"Hyperparameters logged to TensorBoard")
 
-                    if USE_VEC_NORMALIZE:
-                        train_env.save(norm_path)
-                        print(f"Normalization stats saved to {norm_path}.pkl")
 
                     all_results[algo_name][config_name][seed] = callback.eval_results
 
@@ -406,7 +398,7 @@ def main():
     for algo_name in ALGO_CONFIGS:
         for seed in SEEDS:
             model_path = os.path.join(MODEL_DIR, f'{algo_name}_cfg00_seed{seed}')
-            norm_path = os.path.join(NORM_DIR, f'{algo_name}_cfg00_seed{seed}_vecnorm')
+            # norm_path = os.path.join(NORM_DIR, f'{algo_name}_cfg00_seed{seed}_vecnorm')  # Disabled - no normalization
 
             if not os.path.exists(model_path + '.zip'):
                 continue
@@ -419,11 +411,7 @@ def main():
                     eval_env = FetchFeatureWrapper(eval_env)
 
                 eval_env_vec = DummyVecEnv([lambda env=eval_env: env])
-                if USE_VEC_NORMALIZE and os.path.exists(norm_path + '.pkl'):
-                    eval_env_vec_norm = VecNormalize.load(norm_path, eval_env_vec)
-                    print(f'  Loaded normalization stats for {algo_name}_seed{seed}')
-                else:
-                    eval_env_vec_norm = eval_env_vec
+                eval_env_vec_norm = eval_env_vec
 
                 algo_class = {'TD3': TD3, 'DDPG': DDPG, 'SAC': SAC}[algo_name]
                 model = algo_class.load(model_path, env=eval_env_vec_norm)
