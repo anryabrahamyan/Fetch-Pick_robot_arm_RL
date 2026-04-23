@@ -123,7 +123,7 @@ class SuccessRateCallback(BaseCallback):
         if self.n_calls % self.eval_freq == 0:
             successes, rewards = [], []
             for _ in range(self.n_eval_episodes):
-                obs, info = self.eval_env_vec_norm.reset()
+                obs = self.eval_env_vec_norm.reset()
                 done = False
                 ep_reward = 0.0
                 with warnings.catch_warnings():
