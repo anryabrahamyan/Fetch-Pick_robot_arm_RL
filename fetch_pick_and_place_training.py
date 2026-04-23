@@ -111,9 +111,9 @@ def generate_configs(algo_name, grid):
 
 # ==================== CALLBACK ====================
 class SuccessRateCallback(BaseCallback):
-    def __init__(self, eval_env_vec_norm, run_name, eval_freq, n_eval_episodes, log_path, verbose=0):
+    def __init__(self, eval_env, run_name, eval_freq, n_eval_episodes, log_path, verbose=0):
         super().__init__(verbose)
-        self.eval_env_vec_norm = eval_env_vec_norm
+        self.eval_env = eval_env
         self.run_name = run_name
         self.eval_freq = eval_freq
         self.n_eval_episodes = n_eval_episodes
@@ -124,14 +124,14 @@ class SuccessRateCallback(BaseCallback):
         if self.n_calls % self.eval_freq == 0:
             successes, rewards = [], []
             for _ in range(self.n_eval_episodes):
-                obs = self.eval_env_vec_norm.reset()
-                done = False
+                obs = self.eval_env.reset()
+                done = np.array([False])
                 ep_reward = 0.0
                 with warnings.catch_warnings():
                     warnings.filterwarnings('ignore')
                     while not done[0]:
                         action, _ = self.model.predict(obs, deterministic=True)
-                        obs, reward, done, info = self.eval_env_vec_norm.step(action)
+                        obs, reward, done, info = self.eval_env.step(action)
                         ep_reward += reward[0]
                 successes.append(info[0].get('is_success', 0.0) if isinstance(info, list) else info.get('is_success', 0.0))
                 rewards.append(float(ep_reward))
@@ -255,7 +255,7 @@ def main():
                         eval_env = FetchFeatureWrapper(eval_env)
 
                     eval_env_vec = DummyVecEnv([lambda env=eval_env: env])
-                    eval_env_vec_norm = eval_env_vec
+                    eval_env_vec = eval_env_vec
 
                     log_path = os.path.join(LOG_DIR, f'{run_name}_eval.csv')
 
@@ -287,7 +287,7 @@ def main():
                         print(f"[Fresh Start] Initializing new model...")
                         model = algo_class('MultiInputPolicy', train_env, replay_buffer_class=HerReplayBuffer, replay_buffer_kwargs=HER_KWARGS, seed=seed, verbose=0, tensorboard_log=TB_LOG_DIR, **final_kwargs, **extra_kwargs)
 
-                    callback = SuccessRateCallback(eval_env_vec_norm=eval_env_vec_norm, run_name=run_name, eval_freq=EVAL_FREQ, n_eval_episodes=N_EVAL_EPISODES, log_path=log_path, verbose=1)
+                    callback = SuccessRateCallback(eval_env=eval_env_vec, run_name=run_name, eval_freq=EVAL_FREQ, n_eval_episodes=N_EVAL_EPISODES, log_path=log_path, verbose=1)
 
                     t0 = time.time()
                     model.learn(total_timesteps=TOTAL_TIMESTEPS, callback=callback, tb_log_name=run_name, progress_bar=True)
@@ -411,19 +411,19 @@ def main():
                     eval_env = FetchFeatureWrapper(eval_env)
 
                 eval_env_vec = DummyVecEnv([lambda env=eval_env: env])
-                eval_env_vec_norm = eval_env_vec
+                eval_env_vec = eval_env_vec
 
                 algo_class = {'TD3': TD3, 'DDPG': DDPG, 'SAC': SAC}[algo_name]
-                model = algo_class.load(model_path, env=eval_env_vec_norm)
+                model = algo_class.load(model_path, env=eval_env_vec)
 
                 successes, rewards = [], []
                 for ep in range(50):
-                    obs, info = eval_env_vec_norm.reset()
+                    obs, info = eval_env_vec.reset()
                     done = np.array([False])
                     ep_reward = 0.0
                     while not done[0]:
                         action, _ = model.predict(obs, deterministic=True)
-                        obs, reward, done, info = eval_env_vec_norm.step(action)
+                        obs, reward, done, info = eval_env_vec.step(action)
                         ep_reward += reward[0]
                     is_success = info[0].get('is_success', 0.0) if isinstance(info, (list, tuple)) and isinstance(info[0], dict) else info.get('is_success', 0.0) if isinstance(info, dict) else 0.0
                     successes.append(is_success)
