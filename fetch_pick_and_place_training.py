@@ -73,7 +73,7 @@ HER_KWARGS = dict(n_sampled_goal=8, goal_selection_strategy='future')
 # ==================== HYPERPARAMETER GRIDS ====================
 HYPERPARAMETER_GRIDS = {
     'TD3': {
-        'learning_rate': [1e-3, 5e-3],
+        'learning_rate': [1e-2,1e-3, 5e-3],
         'batch_size': [256],
         'gamma': [0.98, 0.99],
         'tau': [0.005],
@@ -128,13 +128,12 @@ class SuccessRateCallback(BaseCallback):
                 ep_reward = 0.0
                 with warnings.catch_warnings():
                     warnings.filterwarnings('ignore')
-                    while not done:
+                    while not done[0]:
                         action, _ = self.model.predict(obs, deterministic=True)
-                        obs, reward, terminated, truncated, info = self.eval_env_vec_norm.step(action)
-                        ep_reward += reward
-                        done = terminated or truncated
-                successes.append(info[0].get('is_success', 0.0) if isinstance(info, tuple) else info.get('is_success', 0.0))
-                rewards.append(ep_reward)
+                        obs, reward, done, info = self.eval_env_vec_norm.step(action)
+                        ep_reward += reward[0]
+                successes.append(info[0].get('is_success', 0.0) if isinstance(info, list) else info.get('is_success', 0.0))
+                rewards.append(float(ep_reward))
 
             mean_success_rate = np.mean(successes)
             mean_reward = np.mean(rewards)
@@ -432,13 +431,12 @@ def main():
                 successes, rewards = [], []
                 for ep in range(50):
                     obs, info = eval_env_vec_norm.reset()
-                    done = False
+                    done = np.array([False])
                     ep_reward = 0.0
-                    while not done:
+                    while not done[0]:
                         action, _ = model.predict(obs, deterministic=True)
-                        obs, reward, terminated, truncated, info = eval_env_vec_norm.step(action)
-                        ep_reward += reward
-                        done = terminated or truncated
+                        obs, reward, done, info = eval_env_vec_norm.step(action)
+                        ep_reward += reward[0]
                     is_success = info[0].get('is_success', 0.0) if isinstance(info, (list, tuple)) and isinstance(info[0], dict) else info.get('is_success', 0.0) if isinstance(info, dict) else 0.0
                     successes.append(is_success)
                     rewards.append(ep_reward)
