@@ -74,7 +74,7 @@ HER_KWARGS = dict(n_sampled_goal=8, goal_selection_strategy='future')
 # ==================== HYPERPARAMETER GRIDS ====================
 HYPERPARAMETER_GRIDS = {
     'TD3': {
-        'learning_rate': [1e-2,1e-3, 5e-3],
+        'learning_rate': [1e-3, 5e-4],
         'batch_size': [256],
         'gamma': [0.98, 0.99],
         'tau': [0.005],
@@ -84,14 +84,14 @@ HYPERPARAMETER_GRIDS = {
         'target_noise_clip': [0.5],
     },
     'DDPG': {
-        'learning_rate': [1e-3, 5e-3],
+        'learning_rate': [1e-3, 5e-4],
         'batch_size': [256],
         'gamma': [0.98, 0.99],
         'tau': [0.005],
         'net_arch': [[256, 256, 256]],
     },
     'SAC': {
-        'learning_rate': [1e-3, 5e-3],
+        'learning_rate': [1e-3, 5e-4],
         'batch_size': [256],
         'gamma': [0.98, 0.99],
         'tau': [0.005],
@@ -262,7 +262,7 @@ def main():
                     extra_kwargs = {}
                     if algo_name in ['TD3', 'DDPG']:
                         n_actions = train_env.action_space.shape[-1]
-                        extra_kwargs['action_noise'] = NormalActionNoise(mean=np.zeros(n_actions), sigma=0.1 * np.ones(n_actions))
+                        extra_kwargs['action_noise'] = NormalActionNoise(mean=np.zeros(n_actions), sigma=0.05 * np.ones(n_actions))
 
                     model_path = os.path.join(MODEL_DIR, run_name)
                     # norm_path = os.path.join(NORM_DIR, f'{run_name}_vecnorm')  # Disabled - no normalization
