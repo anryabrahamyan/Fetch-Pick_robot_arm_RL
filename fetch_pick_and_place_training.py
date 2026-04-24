@@ -77,7 +77,7 @@ HYPERPARAMETER_GRIDS = {
         'learning_rate': [1e-3, 5e-4],
         'batch_size': [256],
         'gamma': [0.995,0.99, 0.98],
-        'tau': [0.05,0.005],
+        'tau': [0.005],
         'net_arch': [[256, 256, 256]],
         'ent_coef': ['auto'],
     },
@@ -111,7 +111,7 @@ def generate_configs(algo_name, grid):
 
 # ==================== CALLBACK ====================
 class SuccessRateCallback(BaseCallback):
-    def __init__(self, eval_env, run_name, eval_freq, n_eval_episodes, log_path, verbose=0):
+    def __init__(self, eval_env, run_name, eval_freq, n_eval_episodes, log_path, config=None, verbose=0):
         super().__init__(verbose)
         self.eval_env = eval_env
         self.run_name = run_name
@@ -119,6 +119,16 @@ class SuccessRateCallback(BaseCallback):
         self.n_eval_episodes = n_eval_episodes
         self.log_path = log_path
         self.eval_results = []
+        self.config = config or {}
+
+    def _on_training_start(self) -> None:
+        """Log hyperparameters to TensorBoard at the start of training."""
+        for key, value in self.config.items():
+            if isinstance(value, (int, float, bool)):
+                self.logger.record(f"config/{key}", value)
+            else:
+                self.logger.record(f"config/{key}", str(value))
+        self.logger.dump(self.num_timesteps)
 
     def _on_step(self) -> bool:
         if self.n_calls % self.eval_freq == 0:
@@ -288,7 +298,30 @@ def main():
                         print(f"[Fresh Start] Initializing new model...")
                         model = algo_class('MultiInputPolicy', train_env, replay_buffer_class=HerReplayBuffer, replay_buffer_kwargs=HER_KWARGS, seed=seed, verbose=0, tensorboard_log=TB_LOG_DIR, **final_kwargs, **extra_kwargs)
 
-                    callback = SuccessRateCallback(eval_env=eval_env_vec, run_name=run_name, eval_freq=EVAL_FREQ, n_eval_episodes=N_EVAL_EPISODES, log_path=log_path, verbose=1)
+                    # Gather all hyperparams for logging
+                    full_config = {
+                        "algo": algo_name,
+                        "lr": hparam_config.get('learning_rate'),
+                        "bs": hparam_config.get('batch_size'),
+                        "gamma": hparam_config.get('gamma'),
+                        "tau": hparam_config.get('tau'),
+                        "n_envs": N_ENVS,
+                        "total_timesteps": TOTAL_TIMESTEPS,
+                        "her_sampled": HER_KWARGS.get('n_sampled_goal'),
+                        "norm": USE_VEC_NORMALIZE,
+                    }
+                    if algo_name in ['TD3', 'DDPG']:
+                        full_config['noise_sigma'] = 0.2
+
+                    callback = SuccessRateCallback(
+                        eval_env=eval_env_vec, 
+                        run_name=run_name, 
+                        eval_freq=EVAL_FREQ, 
+                        n_eval_episodes=N_EVAL_EPISODES, 
+                        log_path=log_path, 
+                        config=full_config,
+                        verbose=1
+                    )
 
                     t0 = time.time()
                     model.learn(total_timesteps=TOTAL_TIMESTEPS, callback=callback, tb_log_name=run_name, progress_bar=True)
