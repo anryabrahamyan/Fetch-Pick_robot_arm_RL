@@ -49,7 +49,7 @@ class FetchFeatureWrapper(gym.ObservationWrapper):
         # Extract key positions from observation array
         # Index mapping (FetchPickAndPlace observation):
         gripper_pos = observation[0:3]       # Gripper position (x, y, z)
-        object_pos = observation[10:13]      # Object position (x, y, z)
+        object_pos = observation[3:6]        # Object position (x, y, z)
 
         # Compute delta coordinates (appended features)
         # 1. Relative position: object w.r.t. gripper
