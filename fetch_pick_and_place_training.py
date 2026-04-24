@@ -38,8 +38,7 @@ gym.register_envs(gymnasium_robotics)
 from stable_baselines3 import SAC, TD3, DDPG, HerReplayBuffer
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.noise import NormalActionNoise
-from stable_baselines3.common.vec_env import SubprocVecEnv, DummyVecEnv
-# from stable_baselines3.common.vec_env import VecNormalize  # Disabled
+from stable_baselines3.common.vec_env import SubprocVecEnv, DummyVecEnv, VecNormalize
 
 import imageio
 from torch.utils.tensorboard import SummaryWriter
@@ -53,31 +52,32 @@ LOG_DIR     = os.path.join(PROJECT_DIR, 'logs')
 MODEL_DIR   = os.path.join(PROJECT_DIR, 'models')
 VIDEO_DIR   = os.path.join(PROJECT_DIR, 'videos')
 TB_LOG_DIR  = os.path.join(PROJECT_DIR, 'tb_logs')
+NORM_DIR    = os.path.join(PROJECT_DIR, 'normalization')
 # NORM_DIR    = os.path.join(PROJECT_DIR, 'normalization')  # Disabled - no normalization
 
-for d in [LOG_DIR, MODEL_DIR, VIDEO_DIR, TB_LOG_DIR]:
+for d in [LOG_DIR, MODEL_DIR, VIDEO_DIR, TB_LOG_DIR, NORM_DIR]:
     os.makedirs(d, exist_ok=True)
 
 # ==================== CONFIGURATION ====================
 ENV_ID = 'FetchPickAndPlace-v4'
-TOTAL_TIMESTEPS = 3_000_000
+TOTAL_TIMESTEPS = 5_000_000
 EVAL_FREQ = 250_000
 N_EVAL_EPISODES = 100
 SEEDS = [42, 120]
 N_ENVS = 8
 
 USE_FEATURE_WRAPPER = True
-USE_VEC_NORMALIZE = False
+USE_VEC_NORMALIZE = True
 
-HER_KWARGS = dict(n_sampled_goal=12, goal_selection_strategy='future')
+HER_KWARGS = dict(n_sampled_goal=4, goal_selection_strategy='future')
 
 # ==================== HYPERPARAMETER GRIDS ====================
 HYPERPARAMETER_GRIDS = {
     'SAC': {
-        'learning_rate': [1e-3, 5e-4],
+        'learning_rate': [1e-3,5e-4],
         'batch_size': [256],
-        'gamma': [0.995,0.99, 0.98],
-        'tau': [0.005],
+        'gamma': [0.98,0.99,0.995],
+        'tau': [0.05,0.005],
         'net_arch': [[256, 256, 256]],
         'ent_coef': ['auto'],
     },
@@ -131,7 +131,7 @@ class SuccessRateCallback(BaseCallback):
         self.logger.dump(self.num_timesteps)
 
     def _on_step(self) -> bool:
-        if self.n_calls % self.eval_freq == 0:
+        if self.num_timesteps % self.eval_freq < self.model.n_envs:
             successes, rewards = [], []
             for _ in range(self.n_eval_episodes):
                 obs = self.eval_env.reset()
@@ -214,15 +214,6 @@ def main():
         print(f"\n2. With FetchFeatureWrapper (delta coordinates APPENDED):\n   Obs space: {wrapped_env.observation_space}\n   Obs 'observation' shape: {obs['observation'].shape}\n   ✓ Original features: 25 (indices 0:25)\n   ✓ obj_rel_gripper: 3 (indices 25:28)\n   ✓ goal_rel_obj: 3 (indices 28:31)\n   ✓ dist_to_goal: 1 (index 31)\n   ✓ Total: 25 + 7 = 32 features")
         wrapped_env.close()
 
-        # Test 3: VecNormalize disabled
-        # dummy_env_wrapped = DummyVecEnv([lambda: FetchFeatureWrapper(gym.make(ENV_ID))])
-        # vec_normalized = VecNormalize(dummy_env_wrapped, norm_obs=True, norm_reward=False, clip_obs=10.0)
-        # obs = vec_normalized.reset()
-        # print(f"\n3. With FetchFeatureWrapper + VecNormalize:\n   Obs space (after norm): {vec_normalized.observation_space}\n   Obs dict keys: {list(obs.keys()) if isinstance(obs, dict) else 'N/A (array)'}")
-        # if isinstance(obs, dict):
-        #     print(f"   Obs 'observation' shape: {obs['observation'].shape}\n   ✓ VecNormalize applied successfully\n   ✓ Observations normalized to N(0, 1)\n   ✓ Clipping enabled: [-10, 10]\n   ✓ Reward normalization: DISABLED (HER compatibility)")
-        # vec_normalized.close()
-
     print("\n" + "="*70 + "\n✓ All observation shapes validated successfully!\n" + "="*70)
 
     # ==================== HYPERPARAMETER GRID SETUP ====================
@@ -260,12 +251,36 @@ def main():
 
                     train_env = SubprocVecEnv([make_fetch_env(ENV_ID, seed, i, wrapper=USE_FEATURE_WRAPPER) for i in range(N_ENVS)])
 
-                    eval_env = gym.make(ENV_ID, render_mode='rgb_array')
-                    if USE_FEATURE_WRAPPER:
-                        eval_env = FetchFeatureWrapper(eval_env)
+                    model_path = os.path.join(MODEL_DIR, run_name)
+                    norm_path  = os.path.join(NORM_DIR, f'{run_name}_vecnorm.pkl')
+                    tb_run_dir = os.path.join(TB_LOG_DIR, run_name)
+                    os.makedirs(tb_run_dir, exist_ok=True)
 
-                    eval_env_vec = DummyVecEnv([lambda env=eval_env: env])
-                    eval_env_vec = eval_env_vec
+                    if USE_VEC_NORMALIZE:
+                        # FIX #5 (Minor): On training restart, load saved norm stats from
+                        # disk so the running mean/std are restored correctly. Sharing
+                        # obs_rms by reference (the original approach) works within a
+                        # single run but becomes stale after the process restarts.
+                        if os.path.exists(norm_path):
+                            train_env = VecNormalize.load(norm_path, train_env)
+                            train_env.training = True
+                            train_env.norm_reward = False
+                            print(f"[VecNormalize] Loaded existing stats from {norm_path}")
+                        else:
+                            train_env = VecNormalize(train_env, norm_obs=True, norm_reward=False, clip_obs=5.0, norm_obs_keys=['observation'])
+
+                    eval_env_raw = gym.make(ENV_ID)
+                    if USE_FEATURE_WRAPPER:
+                        eval_env_raw = FetchFeatureWrapper(eval_env_raw)
+
+                    eval_env_vec = DummyVecEnv([lambda env=eval_env_raw: env])
+
+                    if USE_VEC_NORMALIZE:
+                        eval_env_vec = VecNormalize(eval_env_vec, norm_obs=True, norm_reward=False, clip_obs=5.0, training=False, norm_obs_keys=['observation'])
+                        # Share the live RunningMeanStd reference so the eval env always
+                        # uses up-to-date stats during this run. This is correct for
+                        # within-run evaluation; post-training eval uses the saved file.
+                        eval_env_vec.obs_rms = train_env.obs_rms
 
                     log_path = os.path.join(LOG_DIR, f'{run_name}_eval.csv')
 
@@ -275,10 +290,7 @@ def main():
                         # OpenAI paper uses sigma=0.2 for exploration
                         extra_kwargs['action_noise'] = NormalActionNoise(mean=np.zeros(n_actions), sigma=0.2 * np.ones(n_actions))
 
-                    model_path = os.path.join(MODEL_DIR, run_name)
-                    # norm_path = os.path.join(NORM_DIR, f'{run_name}_vecnorm')  # Disabled - no normalization
-                    tb_run_dir = os.path.join(TB_LOG_DIR, run_name)
-                    os.makedirs(tb_run_dir, exist_ok=True)
+                    os.makedirs(TB_LOG_DIR, exist_ok=True)
 
                     final_kwargs = {**SHARED_KWARGS, **hparam_config}
                     net_arch = final_kwargs.pop('net_arch')
@@ -287,9 +299,6 @@ def main():
 
                     with open(os.path.join(LOG_DIR, f'{run_name}_config.json'), 'w') as f:
                         json.dump({'algo': algo_name, 'seed': seed, 'config_idx': config_idx, 'total_timesteps': TOTAL_TIMESTEPS, 'use_feature_wrapper': USE_FEATURE_WRAPPER, 'use_vec_normalize': USE_VEC_NORMALIZE, 'her_kwargs': HER_KWARGS, 'hyperparams': final_kwargs}, f, indent=4)
-
-                    # Ensure TB directory exists
-                    os.makedirs(TB_LOG_DIR, exist_ok=True)
 
                     if os.path.exists(model_path + '.zip'):
                         print(f"[Continuation] Loading existing model...")
@@ -314,11 +323,11 @@ def main():
                         full_config['noise_sigma'] = 0.2
 
                     callback = SuccessRateCallback(
-                        eval_env=eval_env_vec, 
-                        run_name=run_name, 
-                        eval_freq=EVAL_FREQ, 
-                        n_eval_episodes=N_EVAL_EPISODES, 
-                        log_path=log_path, 
+                        eval_env=eval_env_vec,
+                        run_name=run_name,
+                        eval_freq=EVAL_FREQ,
+                        n_eval_episodes=N_EVAL_EPISODES,
+                        log_path=log_path,
                         config=full_config,
                         verbose=1
                     )
@@ -326,11 +335,19 @@ def main():
                     t0 = time.time()
                     model.learn(total_timesteps=TOTAL_TIMESTEPS, callback=callback, tb_log_name=run_name, progress_bar=True)
                     elapsed = time.time() - t0
-                    print(f"\nFinished {run_name} in {elapsed/60:.1f} min\nModel saved to {model_path}")
+                    print(f"\nFinished {run_name} in {elapsed/60:.1f} min")
 
                     model.save(model_path)
+                    print(f"Model saved to {model_path}")
 
-                    os.makedirs(tb_run_dir, exist_ok=True)
+                    # FIX #1 (Critical): Save VecNormalize running stats to disk.
+                    # The policy was trained on normalized observations; without saving
+                    # and restoring these stats, all post-training evaluation and video
+                    # recording will feed raw un-normalized inputs to the policy.
+                    if USE_VEC_NORMALIZE:
+                        train_env.save(norm_path)
+                        print(f"VecNormalize stats saved to {norm_path}")
+
                     writer = SummaryWriter(log_dir=tb_run_dir)
                     hparam_dict = {
                         'learning_rate': hparam_config['learning_rate'],
@@ -349,7 +366,6 @@ def main():
                     writer.flush()
                     writer.close()
                     print(f"Hyperparameters logged to TensorBoard")
-
 
                     all_results[algo_name][config_name][seed] = callback.eval_results
 
@@ -432,7 +448,7 @@ def main():
     for algo_name in ALGO_CONFIGS:
         for seed in SEEDS:
             model_path = os.path.join(MODEL_DIR, f'{algo_name}_cfg00_seed{seed}')
-            # norm_path = os.path.join(NORM_DIR, f'{algo_name}_cfg00_seed{seed}_vecnorm')  # Disabled - no normalization
+            norm_path  = os.path.join(NORM_DIR,  f'{algo_name}_cfg00_seed{seed}_vecnorm.pkl')
 
             if not os.path.exists(model_path + '.zip'):
                 continue
@@ -445,14 +461,24 @@ def main():
                     eval_env = FetchFeatureWrapper(eval_env)
 
                 eval_env_vec = DummyVecEnv([lambda env=eval_env: env])
-                eval_env_vec = eval_env_vec
+
+                # FIX #4 (Significant): Apply VecNormalize when loading for evaluation.
+                # The original code had a no-op self-assignment (eval_env_vec = eval_env_vec)
+                # where this wrapping should have been. Without it the policy receives
+                # raw un-normalized observations, making the benchmark numbers meaningless.
+                if USE_VEC_NORMALIZE and os.path.exists(norm_path):
+                    eval_env_vec = VecNormalize.load(norm_path, eval_env_vec)
+                    eval_env_vec.training = False
+                    eval_env_vec.norm_reward = False
+                elif USE_VEC_NORMALIZE:
+                    print(f"  Warning: norm stats not found at {norm_path}, evaluation may be inaccurate.")
 
                 algo_class = {'TD3': TD3, 'DDPG': DDPG, 'SAC': SAC}[algo_name]
                 model = algo_class.load(model_path, env=eval_env_vec)
 
                 successes, rewards = [], []
                 for ep in range(50):
-                    obs, info = eval_env_vec.reset()
+                    obs = eval_env_vec.reset()
                     done = np.array([False])
                     ep_reward = 0.0
                     while not done[0]:
@@ -501,24 +527,40 @@ def main():
     # ==================== VIDEO RECORDING ====================
     print("\nRecording agent videos...\n")
 
-    def record_video(model, env_id, video_path, n_episodes=3, fps=30):
-        """Record a video of the agent performing in the environment."""
+    def record_video(model, env_id, video_path, use_wrapper, norm_path, n_episodes=3, fps=30):
+        """
+        Record a video of the agent performing in the environment.
+
+        FIX #2 (Critical): The function now accepts use_wrapper and norm_path so it
+        can reconstruct the exact same observation pipeline the policy was trained on
+        (FetchFeatureWrapper + VecNormalize). The original version called gym.make()
+        with no wrapper, causing a 25-dim vs 32-dim shape mismatch at inference.
+        """
         with warnings.catch_warnings():
             warnings.filterwarnings('ignore')
-            env = gym.make(env_id, render_mode='rgb_array')
-            frames = []
 
+            env = gym.make(env_id, render_mode='rgb_array')
+            if use_wrapper:
+                env = FetchFeatureWrapper(env)
+
+            env_vec = DummyVecEnv([lambda e=env: e])
+
+            if USE_VEC_NORMALIZE and os.path.exists(norm_path):
+                env_vec = VecNormalize.load(norm_path, env_vec)
+                env_vec.training = False
+                env_vec.norm_reward = False
+
+            frames = []
             for ep in range(n_episodes):
-                obs, info = env.reset()
-                done = False
-                while not done:
+                obs = env_vec.reset()
+                done = np.array([False])
+                while not done[0]:
                     frames.append(env.render())
                     action, _ = model.predict(obs, deterministic=True)
-                    obs, reward, terminated, truncated, info = env.step(action)
-                    done = terminated or truncated
+                    obs, reward, done, info = env_vec.step(action)
                 frames.append(env.render())
 
-            env.close()
+            env_vec.close()
             imageio.mimsave(video_path, frames, fps=fps)
             print(f'  Saved video: {video_path} ({len(frames)} frames)')
             return video_path
@@ -539,17 +581,32 @@ def main():
             continue
 
         model_path = os.path.join(MODEL_DIR, f'{algo_name}_cfg00_seed{best_seed}')
+        norm_path  = os.path.join(NORM_DIR,  f'{algo_name}_cfg00_seed{best_seed}_vecnorm.pkl')
 
         with warnings.catch_warnings():
             warnings.filterwarnings('ignore')
-            eval_env = gym.make(ENV_ID)
+
+            # FIX #2 (continued): Build the full observation pipeline before loading
+            # the model, so the model's internal obs_space check passes correctly.
+            load_env = gym.make(ENV_ID)
+            if USE_FEATURE_WRAPPER:
+                load_env = FetchFeatureWrapper(load_env)
+            load_env_vec = DummyVecEnv([lambda e=load_env: e])
+            if USE_VEC_NORMALIZE and os.path.exists(norm_path):
+                load_env_vec = VecNormalize.load(norm_path, load_env_vec)
+                load_env_vec.training = False
+                load_env_vec.norm_reward = False
+
             algo_class = {'TD3': TD3, 'DDPG': DDPG, 'SAC': SAC}[algo_name]
-            model = algo_class.load(model_path, env=eval_env)
-            eval_env.close()
+            model = algo_class.load(model_path, env=load_env_vec)
+            load_env_vec.close()
 
         video_path = os.path.join(VIDEO_DIR, f'{algo_name}_best.mp4')
         print(f'{algo_name} (seed={best_seed}, final success={best_sr:.2%}):')
-        record_video(model, ENV_ID, video_path, n_episodes=3, fps=30)
+        record_video(model, ENV_ID, video_path,
+                     use_wrapper=USE_FEATURE_WRAPPER,
+                     norm_path=norm_path,
+                     n_episodes=3, fps=30)
         print()
 
     print('All videos recorded!')
