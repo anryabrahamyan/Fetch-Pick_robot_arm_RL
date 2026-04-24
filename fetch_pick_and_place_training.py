@@ -69,7 +69,7 @@ N_ENVS = 8
 USE_FEATURE_WRAPPER = True
 USE_VEC_NORMALIZE = False
 
-HER_KWARGS = dict(n_sampled_goal=8, goal_selection_strategy='future')
+HER_KWARGS = dict(n_sampled_goal=12, goal_selection_strategy='future')
 
 # ==================== HYPERPARAMETER GRIDS ====================
 HYPERPARAMETER_GRIDS = {
