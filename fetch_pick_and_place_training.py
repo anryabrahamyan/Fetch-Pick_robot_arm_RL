@@ -76,8 +76,8 @@ HYPERPARAMETER_GRIDS = {
     'SAC': {
         'learning_rate': [1e-3, 5e-4],
         'batch_size': [256],
-        'gamma': [0.98, 0.99],
-        'tau': [0.005],
+        'gamma': [0.995,0.99, 0.98],
+        'tau': [0.05,0.005],
         'net_arch': [[256, 256, 256]],
         'ent_coef': ['auto'],
     },
@@ -85,7 +85,7 @@ HYPERPARAMETER_GRIDS = {
         'learning_rate': [1e-3, 5e-4],
         'batch_size': [256],
         'gamma': [0.98, 0.99],
-        'tau': [0.005],
+        'tau': [0.005, 0.05],
         'net_arch': [[256, 256, 256]],
         'policy_delay': [2],
         'target_policy_noise': [0.2],
@@ -95,7 +95,7 @@ HYPERPARAMETER_GRIDS = {
         'learning_rate': [1e-3, 5e-4],
         'batch_size': [256],
         'gamma': [0.98, 0.99],
-        'tau': [0.005],
+        'tau': [0.005, 0.05],
         'net_arch': [[256, 256, 256]],
     },
 }
@@ -233,7 +233,7 @@ def main():
     # ==================== TRAINING ====================
     all_results = {}
 
-    for algo_name in ['TD3', 'DDPG', 'SAC']:
+    for algo_name in HYPERPARAMETER_GRIDS.keys():
         algo_class = {'TD3': TD3, 'DDPG': DDPG, 'SAC': SAC}[algo_name]
         all_results[algo_name] = {}
 
@@ -262,7 +262,8 @@ def main():
                     extra_kwargs = {}
                     if algo_name in ['TD3', 'DDPG']:
                         n_actions = train_env.action_space.shape[-1]
-                        extra_kwargs['action_noise'] = NormalActionNoise(mean=np.zeros(n_actions), sigma=0.05 * np.ones(n_actions))
+                        # OpenAI paper uses sigma=0.2 for exploration
+                        extra_kwargs['action_noise'] = NormalActionNoise(mean=np.zeros(n_actions), sigma=0.2 * np.ones(n_actions))
 
                     model_path = os.path.join(MODEL_DIR, run_name)
                     # norm_path = os.path.join(NORM_DIR, f'{run_name}_vecnorm')  # Disabled - no normalization
