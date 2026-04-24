@@ -73,6 +73,14 @@ HER_KWARGS = dict(n_sampled_goal=12, goal_selection_strategy='future')
 
 # ==================== HYPERPARAMETER GRIDS ====================
 HYPERPARAMETER_GRIDS = {
+    'SAC': {
+        'learning_rate': [1e-3, 5e-4],
+        'batch_size': [256],
+        'gamma': [0.98, 0.99],
+        'tau': [0.005],
+        'net_arch': [[256, 256, 256]],
+        'ent_coef': ['auto'],
+    },
     'TD3': {
         'learning_rate': [1e-3, 5e-4],
         'batch_size': [256],
@@ -89,14 +97,6 @@ HYPERPARAMETER_GRIDS = {
         'gamma': [0.98, 0.99],
         'tau': [0.005],
         'net_arch': [[256, 256, 256]],
-    },
-    'SAC': {
-        'learning_rate': [1e-3, 5e-4],
-        'batch_size': [256],
-        'gamma': [0.98, 0.99],
-        'tau': [0.005],
-        'net_arch': [[256, 256, 256]],
-        'ent_coef': ['auto'],
     },
 }
 
