@@ -60,9 +60,11 @@ for d in [LOG_DIR, MODEL_DIR, VIDEO_DIR, TB_LOG_DIR, NORM_DIR]:
 
 # ==================== CONFIGURATION ====================
 ENV_ID = 'FetchPickAndPlace-v4'
-TOTAL_TIMESTEPS = 5_000_000
+TOTAL_TIMESTEPS = 10_000_000   # Extended: curve not plateaued at 5M (68% SR, still trending)
 EVAL_FREQ = 250_000
 N_EVAL_EPISODES = 100
+VIDEO_FREQ = 1_000_000         # Record one checkpoint video every 1M steps during training
+N_VIDEO_EPISODES = 1           # One episode per checkpoint (keep overhead low)
 SEEDS = [42, 120]
 N_ENVS = 8
 
@@ -111,15 +113,26 @@ def generate_configs(algo_name, grid):
 
 # ==================== CALLBACK ====================
 class SuccessRateCallback(BaseCallback):
-    def __init__(self, eval_env, run_name, eval_freq, n_eval_episodes, log_path, config=None, verbose=0):
+    def __init__(self, eval_env, run_name, eval_freq, n_eval_episodes, log_path,
+                 video_env=None, video_dir=None, video_freq=1_000_000, n_video_episodes=1,
+                 config=None, verbose=0):
         super().__init__(verbose)
-        self.eval_env = eval_env
-        self.run_name = run_name
-        self.eval_freq = eval_freq
-        self.n_eval_episodes = n_eval_episodes
-        self.log_path = log_path
-        self.eval_results = []
-        self.config = config or {}
+        self.eval_env          = eval_env
+        self.run_name          = run_name
+        self.eval_freq         = eval_freq
+        self.n_eval_episodes   = n_eval_episodes
+        self.log_path          = log_path
+        self.eval_results      = []
+        self.config            = config or {}
+
+        # ---- video checkpointing ----
+        # video_env must be a DummyVecEnv wrapping a render_mode='rgb_array' env,
+        # with VecNormalize applied (obs_rms shared from train_env). It is kept
+        # alive for the full training run and closed externally alongside eval_env.
+        self.video_env         = video_env
+        self.video_dir         = video_dir
+        self.video_freq        = video_freq
+        self.n_video_episodes  = n_video_episodes
 
     def _on_training_start(self) -> None:
         """Log hyperparameters to TensorBoard at the start of training."""
@@ -130,12 +143,40 @@ class SuccessRateCallback(BaseCallback):
                 self.logger.record(f"config/{key}", str(value))
         self.logger.dump(self.num_timesteps)
 
+    def _record_checkpoint_video(self) -> None:
+        """Record N_VIDEO_EPISODES episodes and save to disk. Called at video_freq intervals."""
+        if self.video_env is None or self.video_dir is None:
+            return
+
+        step_tag   = f"{self.num_timesteps // 1_000}k"
+        video_path = os.path.join(self.video_dir, f"{self.run_name}_step{step_tag}.mp4")
+
+        frames = []
+        with warnings.catch_warnings():
+            warnings.filterwarnings('ignore')
+            for _ in range(self.n_video_episodes):
+                obs  = self.video_env.reset()
+                done = np.array([False])
+                while not done[0]:
+                    # render() must be called on the underlying unwrapped env so
+                    # that rgb_array frames are returned regardless of VecNormalize.
+                    frame = self.video_env.envs[0].render()
+                    if frame is not None:
+                        frames.append(frame)
+                    action, _ = self.model.predict(obs, deterministic=True)
+                    obs, _, done, _ = self.video_env.step(action)
+
+        if frames:
+            imageio.mimsave(video_path, frames, fps=30)
+            print(f"  [Video] Saved checkpoint: {video_path} ({len(frames)} frames)")
+
     def _on_step(self) -> bool:
+        # ---- eval checkpoint ----
         if self.num_timesteps % self.eval_freq < self.model.n_envs:
             successes, rewards = [], []
             for _ in range(self.n_eval_episodes):
-                obs = self.eval_env.reset()
-                done = np.array([False])
+                obs      = self.eval_env.reset()
+                done     = np.array([False])
                 ep_reward = 0.0
                 with warnings.catch_warnings():
                     warnings.filterwarnings('ignore')
@@ -143,24 +184,31 @@ class SuccessRateCallback(BaseCallback):
                         action, _ = self.model.predict(obs, deterministic=True)
                         obs, reward, done, info = self.eval_env.step(action)
                         ep_reward += reward[0]
-                successes.append(info[0].get('is_success', 0.0) if isinstance(info, list) else info.get('is_success', 0.0))
+                successes.append(
+                    info[0].get('is_success', 0.0) if isinstance(info, list)
+                    else info.get('is_success', 0.0)
+                )
                 rewards.append(float(ep_reward))
 
             mean_success_rate = np.mean(successes)
-            mean_reward = np.mean(rewards)
+            mean_reward       = np.mean(rewards)
 
             result = {
-                'timestep': self.num_timesteps,
+                'timestep':          self.num_timesteps,
                 'mean_success_rate': mean_success_rate,
-                'mean_reward': mean_reward,
+                'mean_reward':       mean_reward,
             }
             self.eval_results.append(result)
 
             if self.verbose > 0:
-                print(f"[{self.run_name}] Step {self.num_timesteps}: Success Rate = {mean_success_rate:.3f}, Mean Reward = {mean_reward:.2f}")
+                print(f"[{self.run_name}] Step {self.num_timesteps}: "
+                      f"Success Rate = {mean_success_rate:.3f}, Mean Reward = {mean_reward:.2f}")
 
-            df = pd.DataFrame(self.eval_results)
-            df.to_csv(self.log_path, index=False)
+            pd.DataFrame(self.eval_results).to_csv(self.log_path, index=False)
+
+        # ---- video checkpoint (less frequent than eval) ----
+        if self.num_timesteps % self.video_freq < self.model.n_envs:
+            self._record_checkpoint_video()
 
         return True
 
@@ -282,6 +330,23 @@ def main():
                         # within-run evaluation; post-training eval uses the saved file.
                         eval_env_vec.obs_rms = train_env.obs_rms
 
+                    # ---- video env (separate from eval_env: needs render_mode='rgb_array') ----
+                    # Must be a DummyVecEnv so we can call .envs[0].render() for raw frames.
+                    # VecNormalize obs_rms is shared live from train_env (same as eval_env).
+                    video_run_dir = os.path.join(VIDEO_DIR, run_name)
+                    os.makedirs(video_run_dir, exist_ok=True)
+
+                    video_env_raw = gym.make(ENV_ID, render_mode='rgb_array')
+                    if USE_FEATURE_WRAPPER:
+                        video_env_raw = FetchFeatureWrapper(video_env_raw)
+                    video_env_vec = DummyVecEnv([lambda env=video_env_raw: env])
+                    if USE_VEC_NORMALIZE:
+                        video_env_vec = VecNormalize(
+                            video_env_vec, norm_obs=True, norm_reward=False,
+                            clip_obs=5.0, training=False
+                        )
+                        video_env_vec.obs_rms = train_env.obs_rms  # same live stats as train/eval
+
                     log_path = os.path.join(LOG_DIR, f'{run_name}_eval.csv')
 
                     extra_kwargs = {}
@@ -328,12 +393,16 @@ def main():
                         eval_freq=EVAL_FREQ,
                         n_eval_episodes=N_EVAL_EPISODES,
                         log_path=log_path,
+                        video_env=video_env_vec,
+                        video_dir=video_run_dir,
+                        video_freq=VIDEO_FREQ,
+                        n_video_episodes=N_VIDEO_EPISODES,
                         config=full_config,
                         verbose=1
                     )
 
                     t0 = time.time()
-                    model.learn(total_timesteps=TOTAL_TIMESTEPS, callback=callback, tb_log_name=run_name, progress_bar=True)
+                    model.learn(total_timesteps=TOTAL_TIMESTEPS, callback=callback, tb_log_name=run_name, progress_bar=True, reset_num_timesteps=False)
                     elapsed = time.time() - t0
                     print(f"\nFinished {run_name} in {elapsed/60:.1f} min")
 
@@ -348,8 +417,8 @@ def main():
                         train_env.save(norm_path)
                         print(f"VecNormalize stats saved to {norm_path}")
 
-                    # Use the actual logger directory assigned by SB3
-                    actual_tb_log_dir = model.get_logger().get_dir()
+                    # Use the actual logger directory SB3 assigned (avoids the _1/_2 suffix issue)
+                    actual_tb_log_dir = model.logger.dir
                     writer = SummaryWriter(log_dir=actual_tb_log_dir)
                     hparam_dict = {
                         'learning_rate': hparam_config['learning_rate'],
@@ -373,6 +442,7 @@ def main():
 
                     train_env.close()
                     eval_env_vec.close()
+                    video_env_vec.close()
 
     print('\n' + '='*70 + '\nALL TRAINING COMPLETE\n' + '='*70)
 
