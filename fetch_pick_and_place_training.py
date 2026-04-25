@@ -403,7 +403,7 @@ def main():
                     )
 
                     t0 = time.time()
-                    model.learn(total_timesteps=TOTAL_TIMESTEPS, callback=callback, tb_log_name=run_name, progress_bar=True, reset_num_timesteps=False)
+                    model.learn(total_timesteps=TOTAL_TIMESTEPS, callback=callback, tb_log_name=run_name, progress_bar=True, reset_num_timesteps=True)
                     elapsed = time.time() - t0
                     print(f"\nFinished {run_name} in {elapsed/60:.1f} min")
 
