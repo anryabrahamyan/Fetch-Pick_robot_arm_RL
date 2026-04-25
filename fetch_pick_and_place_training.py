@@ -158,11 +158,12 @@ class SuccessRateCallback(BaseCallback):
                 obs  = self.video_env.reset()
                 done = np.array([False])
                 while not done[0]:
-                    # render() must be called on the underlying unwrapped env so
-                    # that rgb_array frames are returned regardless of VecNormalize.
-                    frame = self.video_env.envs[0].render()
-                    if frame is not None:
-                        frames.append(frame)
+                    # get_images() is the correct VecEnv API for rgb_array frames.
+                    # It works through VecNormalize → DummyVecEnv → env.render()
+                    # without needing to access .envs[0] directly (which VecNormalize hides).
+                    imgs = self.video_env.get_images()
+                    if imgs and imgs[0] is not None:
+                        frames.append(imgs[0])
                     action, _ = self.model.predict(obs, deterministic=True)
                     obs, _, done, _ = self.video_env.step(action)
 
@@ -315,7 +316,7 @@ def main():
                             train_env.norm_reward = False
                             print(f"[VecNormalize] Loaded existing stats from {norm_path}")
                         else:
-                            train_env = VecNormalize(train_env, norm_obs=True, norm_reward=False, clip_obs=5.0)
+                            train_env = VecNormalize(train_env, norm_obs=True, norm_reward=False, clip_obs=5.0, norm_obs_keys=['observation'])
 
                     eval_env_raw = gym.make(ENV_ID)
                     if USE_FEATURE_WRAPPER:
@@ -324,15 +325,15 @@ def main():
                     eval_env_vec = DummyVecEnv([lambda env=eval_env_raw: env])
 
                     if USE_VEC_NORMALIZE:
-                        eval_env_vec = VecNormalize(eval_env_vec, norm_obs=True, norm_reward=False, clip_obs=5.0, training=False)
+                        eval_env_vec = VecNormalize(eval_env_vec, norm_obs=True, norm_reward=False, clip_obs=5.0, training=False, norm_obs_keys=['observation'])
                         # Share the live RunningMeanStd reference so the eval env always
                         # uses up-to-date stats during this run. This is correct for
                         # within-run evaluation; post-training eval uses the saved file.
                         eval_env_vec.obs_rms = train_env.obs_rms
 
                     # ---- video env (separate from eval_env: needs render_mode='rgb_array') ----
-                    # Must be a DummyVecEnv so we can call .envs[0].render() for raw frames.
-                    # VecNormalize obs_rms is shared live from train_env (same as eval_env).
+                    # get_images() is used for rendering, which works correctly through
+                    # VecNormalize → DummyVecEnv without needing direct .envs access.
                     video_run_dir = os.path.join(VIDEO_DIR, run_name)
                     os.makedirs(video_run_dir, exist_ok=True)
 
@@ -343,7 +344,7 @@ def main():
                     if USE_VEC_NORMALIZE:
                         video_env_vec = VecNormalize(
                             video_env_vec, norm_obs=True, norm_reward=False,
-                            clip_obs=5.0, training=False
+                            clip_obs=5.0, training=False, norm_obs_keys=['observation']
                         )
                         video_env_vec.obs_rms = train_env.obs_rms  # same live stats as train/eval
 
