@@ -14,6 +14,9 @@ import warnings
 import logging
 import itertools
 
+# Fix for MuJoCo headless offscreen rendering (must be set before gymnasium/mujoco imports)
+os.environ["MUJOCO_GL"] = "egl"
+
 # Suppress all warnings including gymnasium's observation space checker
 warnings.filterwarnings('ignore')
 logging.getLogger('gymnasium').setLevel(logging.ERROR)
@@ -158,12 +161,19 @@ class SuccessRateCallback(BaseCallback):
                 obs  = self.video_env.reset()
                 done = np.array([False])
                 while not done[0]:
-                    # get_images() is the correct VecEnv API for rgb_array frames.
-                    # It works through VecNormalize → DummyVecEnv → env.render()
-                    # without needing to access .envs[0] directly (which VecNormalize hides).
-                    imgs = self.video_env.get_images()
-                    if imgs and imgs[0] is not None:
-                        frames.append(imgs[0])
+                    try:
+                        # get_images() is the correct VecEnv API for rgb_array frames.
+                        # It works through VecNormalize → DummyVecEnv → env.render()
+                        # without needing to access .envs[0] directly (which VecNormalize hides).
+                        imgs = self.video_env.get_images()
+                        if imgs and imgs[0] is not None:
+                            frames.append(imgs[0])
+                    except Exception as e:
+                        print(f"\n  [Video Warning] Offscreen rendering failed: {e}")
+                        print("  Skipping video recording for this run to prevent training crash.")
+                        self.video_env = None
+                        return
+                    
                     action, _ = self.model.predict(obs, deterministic=True)
                     obs, _, done, _ = self.video_env.step(action)
 
@@ -628,10 +638,20 @@ def main():
                 obs = env_vec.reset()
                 done = np.array([False])
                 while not done[0]:
-                    frames.append(env.render())
+                    try:
+                        frames.append(env.render())
+                    except Exception as e:
+                        print(f"\n  [Video Warning] Offscreen rendering failed: {e}")
+                        print("  Skipping video recording.")
+                        env_vec.close()
+                        return None
+                        
                     action, _ = model.predict(obs, deterministic=True)
                     obs, reward, done, info = env_vec.step(action)
-                frames.append(env.render())
+                try:
+                    frames.append(env.render())
+                except:
+                    pass
 
             env_vec.close()
             imageio.mimsave(video_path, frames, fps=fps)
