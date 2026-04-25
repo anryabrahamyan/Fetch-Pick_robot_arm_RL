@@ -66,7 +66,7 @@ N_EVAL_EPISODES = 100
 SEEDS = [42, 120]
 N_ENVS = 8
 
-USE_FEATURE_WRAPPER = True
+USE_FEATURE_WRAPPER = False
 USE_VEC_NORMALIZE = True
 
 HER_KWARGS = dict(n_sampled_goal=4, goal_selection_strategy='future')
@@ -254,7 +254,7 @@ def main():
                     model_path = os.path.join(MODEL_DIR, run_name)
                     norm_path  = os.path.join(NORM_DIR, f'{run_name}_vecnorm.pkl')
                     tb_run_dir = os.path.join(TB_LOG_DIR, run_name)
-                    os.makedirs(tb_run_dir, exist_ok=True)
+                    # os.makedirs(tb_run_dir, exist_ok=True)  # REMOVED: Causes SB3 to append _1
 
                     if USE_VEC_NORMALIZE:
                         # FIX #5 (Minor): On training restart, load saved norm stats from
@@ -267,7 +267,7 @@ def main():
                             train_env.norm_reward = False
                             print(f"[VecNormalize] Loaded existing stats from {norm_path}")
                         else:
-                            train_env = VecNormalize(train_env, norm_obs=True, norm_reward=False, clip_obs=5.0, norm_obs_keys=['observation'])
+                            train_env = VecNormalize(train_env, norm_obs=True, norm_reward=False, clip_obs=5.0)
 
                     eval_env_raw = gym.make(ENV_ID)
                     if USE_FEATURE_WRAPPER:
@@ -276,7 +276,7 @@ def main():
                     eval_env_vec = DummyVecEnv([lambda env=eval_env_raw: env])
 
                     if USE_VEC_NORMALIZE:
-                        eval_env_vec = VecNormalize(eval_env_vec, norm_obs=True, norm_reward=False, clip_obs=5.0, training=False, norm_obs_keys=['observation'])
+                        eval_env_vec = VecNormalize(eval_env_vec, norm_obs=True, norm_reward=False, clip_obs=5.0, training=False)
                         # Share the live RunningMeanStd reference so the eval env always
                         # uses up-to-date stats during this run. This is correct for
                         # within-run evaluation; post-training eval uses the saved file.
@@ -348,7 +348,9 @@ def main():
                         train_env.save(norm_path)
                         print(f"VecNormalize stats saved to {norm_path}")
 
-                    writer = SummaryWriter(log_dir=tb_run_dir)
+                    # Use the actual logger directory assigned by SB3
+                    actual_tb_log_dir = model.get_logger().get_dir()
+                    writer = SummaryWriter(log_dir=actual_tb_log_dir)
                     hparam_dict = {
                         'learning_rate': hparam_config['learning_rate'],
                         'batch_size': hparam_config['batch_size'],
