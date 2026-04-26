@@ -60,7 +60,7 @@ for d in [LOG_DIR, MODEL_DIR, VIDEO_DIR, TB_LOG_DIR, NORM_DIR]:
 
 # ==================== CONFIGURATION ====================
 ENV_ID = 'FetchPickAndPlace-v4'
-TOTAL_TIMESTEPS = 10_000_000   # Extended: curve not plateaued at 5M (68% SR, still trending)
+TOTAL_TIMESTEPS = 5_000_000   # Extended: curve not plateaued at 5M (68% SR, still trending)
 EVAL_FREQ = 250_000
 N_EVAL_EPISODES = 100
 VIDEO_FREQ = 1_000_000         # Record one checkpoint video every 1M steps during training
@@ -71,14 +71,14 @@ N_ENVS = 8
 USE_FEATURE_WRAPPER = False
 USE_VEC_NORMALIZE = True
 
-HER_KWARGS = dict(n_sampled_goal=4, goal_selection_strategy='future')
+HER_KWARGS = dict(n_sampled_goal=8, goal_selection_strategy='future')
 
 # ==================== HYPERPARAMETER GRIDS ====================
 HYPERPARAMETER_GRIDS = {
     'SAC': {
-        'learning_rate': [1e-3,5e-4],
+        'learning_rate': [1e-3],
         'batch_size': [256],
-        'gamma': [0.98,0.99,0.995],
+        'gamma': [0.98],
         'tau': [0.05,0.005],
         'net_arch': [[256, 256, 256]],
         'ent_coef': ['auto'],
@@ -115,7 +115,10 @@ def generate_configs(algo_name, grid):
 class SuccessRateCallback(BaseCallback):
     def __init__(self, eval_env, run_name, eval_freq, n_eval_episodes, log_path,
                  video_env=None, video_dir=None, video_freq=1_000_000, n_video_episodes=1,
-                 config=None, verbose=0):
+                 config=None, verbose=0,
+                 # ---- best-model & early stopping ----
+                 model_save_path=None, norm_save_path=None, train_env=None,
+                 early_stop_patience=3, collapse_ratio=0.5, min_evals_before_stop=5):
         super().__init__(verbose)
         self.eval_env          = eval_env
         self.run_name          = run_name
@@ -133,6 +136,23 @@ class SuccessRateCallback(BaseCallback):
         self.video_dir         = video_dir
         self.video_freq        = video_freq
         self.n_video_episodes  = n_video_episodes
+
+        # ---- best-model checkpointing ----
+        self.model_save_path   = model_save_path   # path WITHOUT .zip extension
+        self.norm_save_path    = norm_save_path     # path to VecNormalize pkl
+        self.train_env         = train_env          # VecNormalize-wrapped train env
+        self.best_success_rate = -1.0
+        self.best_step         = 0
+
+        # ---- early stopping on collapse ----
+        # Stops training when success rate drops below (best * collapse_ratio)
+        # for `early_stop_patience` consecutive evaluations, but only after
+        # at least `min_evals_before_stop` evaluations have been performed
+        # (to avoid stopping during the initial warm-up phase).
+        self.early_stop_patience   = early_stop_patience
+        self.collapse_ratio        = collapse_ratio
+        self.min_evals_before_stop = min_evals_before_stop
+        self._collapse_counter     = 0
 
     def _on_training_start(self) -> None:
         """Log hyperparameters to TensorBoard at the start of training."""
@@ -208,11 +228,48 @@ class SuccessRateCallback(BaseCallback):
             }
             self.eval_results.append(result)
 
+            # ---- best model checkpointing ----
+            if mean_success_rate > self.best_success_rate:
+                self.best_success_rate = mean_success_rate
+                self.best_step         = self.num_timesteps
+                self._collapse_counter = 0  # reset collapse counter on improvement
+
+                if self.model_save_path:
+                    self.model.save(self.model_save_path + '_best')
+                    if self.train_env is not None and self.norm_save_path:
+                        best_norm = self.norm_save_path.replace('.pkl', '_best.pkl')
+                        self.train_env.save(best_norm)
+                    print(f"  ★ New best model saved! SR={mean_success_rate:.3f} at step {self.num_timesteps}")
+
             if self.verbose > 0:
                 print(f"[{self.run_name}] Step {self.num_timesteps}: "
-                      f"Success Rate = {mean_success_rate:.3f}, Mean Reward = {mean_reward:.2f}")
+                      f"Success Rate = {mean_success_rate:.3f}, Mean Reward = {mean_reward:.2f}"
+                      f"  (best={self.best_success_rate:.3f} @ step {self.best_step})")
 
+            # Persist eval results to CSV after every evaluation
             pd.DataFrame(self.eval_results).to_csv(self.log_path, index=False)
+
+            # ---- early stopping on collapse ----
+            n_evals = len(self.eval_results)
+            if (n_evals >= self.min_evals_before_stop
+                    and self.best_success_rate > 0.05):  # don't stop if we never learned
+                collapse_threshold = self.best_success_rate * self.collapse_ratio
+                if mean_success_rate < collapse_threshold:
+                    self._collapse_counter += 1
+                    print(f"  ⚠ Collapse warning {self._collapse_counter}/{self.early_stop_patience}: "
+                          f"SR {mean_success_rate:.3f} < {collapse_threshold:.3f} "
+                          f"(50% of best {self.best_success_rate:.3f})")
+                    if self._collapse_counter >= self.early_stop_patience:
+                        print(f"\n{'='*70}")
+                        print(f"  🛑 EARLY STOPPING: policy collapsed for {self.early_stop_patience} "
+                              f"consecutive evals.")
+                        print(f"     Best model (SR={self.best_success_rate:.3f}) was saved at "
+                              f"step {self.best_step}.")
+                        print(f"     Eval history saved to: {self.log_path}")
+                        print(f"{'='*70}\n")
+                        return False  # stops training
+                else:
+                    self._collapse_counter = 0  # reset if we recover
 
         # ---- video checkpoint (less frequent than eval) ----
         if self.num_timesteps % self.video_freq < self.model.n_envs:
@@ -406,24 +463,38 @@ def main():
                         video_freq=VIDEO_FREQ,
                         n_video_episodes=N_VIDEO_EPISODES,
                         config=full_config,
-                        verbose=1
+                        verbose=1,
+                        # Best-model saving & early stopping
+                        model_save_path=model_path,
+                        norm_save_path=norm_path,
+                        train_env=train_env if USE_VEC_NORMALIZE else None,
+                        early_stop_patience=3,   # stop after 3 consecutive collapsed evals
+                        collapse_ratio=0.5,      # "collapsed" = SR < 50% of peak
+                        min_evals_before_stop=5,  # don't trigger during warm-up
                     )
 
                     t0 = time.time()
                     model.learn(total_timesteps=TOTAL_TIMESTEPS, callback=callback, tb_log_name=run_name, progress_bar=True, reset_num_timesteps=True)
                     elapsed = time.time() - t0
-                    print(f"\nFinished {run_name} in {elapsed/60:.1f} min")
+                    stopped_early = (callback._collapse_counter >= callback.early_stop_patience)
+                    status = "EARLY STOPPED (collapse)" if stopped_early else "COMPLETED"
+                    print(f"\n{status}: {run_name} in {elapsed/60:.1f} min")
 
+                    # Always save the final model (even if collapsed)
                     model.save(model_path)
-                    print(f"Model saved to {model_path}")
+                    print(f"Final model saved to {model_path}")
 
-                    # FIX #1 (Critical): Save VecNormalize running stats to disk.
-                    # The policy was trained on normalized observations; without saving
-                    # and restoring these stats, all post-training evaluation and video
-                    # recording will feed raw un-normalized inputs to the policy.
                     if USE_VEC_NORMALIZE:
                         train_env.save(norm_path)
                         print(f"VecNormalize stats saved to {norm_path}")
+
+                    # Report best vs final
+                    if callback.best_success_rate > 0:
+                        best_model_file = model_path + '_best.zip'
+                        if os.path.exists(best_model_file):
+                            print(f"★ Best model (SR={callback.best_success_rate:.3f} @ step "
+                                  f"{callback.best_step}) saved to {best_model_file}")
+                    print(f"Eval results saved to {log_path}")
 
                     # Use the actual logger directory SB3 assigned (avoids the _1/_2 suffix issue)
                     actual_tb_log_dir = model.logger.dir
@@ -527,10 +598,21 @@ def main():
 
     for algo_name in ALGO_CONFIGS:
         for seed in SEEDS:
-            model_path = os.path.join(MODEL_DIR, f'{algo_name}_cfg00_seed{seed}')
-            norm_path  = os.path.join(NORM_DIR,  f'{algo_name}_cfg00_seed{seed}_vecnorm.pkl')
+            base_model_path = os.path.join(MODEL_DIR, f'{algo_name}_cfg00_seed{seed}')
+            base_norm_path  = os.path.join(NORM_DIR,  f'{algo_name}_cfg00_seed{seed}_vecnorm.pkl')
 
-            if not os.path.exists(model_path + '.zip'):
+            # Prefer the best-checkpoint model over the final (possibly collapsed) model
+            best_model_path = base_model_path + '_best'
+            best_norm_path  = base_norm_path.replace('.pkl', '_best.pkl')
+
+            if os.path.exists(best_model_path + '.zip'):
+                model_path = best_model_path
+                norm_path  = best_norm_path if os.path.exists(best_norm_path) else base_norm_path
+                print(f"  Using best-checkpoint model for {algo_name} seed={seed}")
+            elif os.path.exists(base_model_path + '.zip'):
+                model_path = base_model_path
+                norm_path  = base_norm_path
+            else:
                 continue
 
             with warnings.catch_warnings():
@@ -661,17 +743,28 @@ def main():
             csv_path = os.path.join(LOG_DIR, f'{algo_name}_cfg00_seed{seed}_eval.csv')
             if os.path.exists(csv_path):
                 df = pd.read_csv(csv_path)
-                final_sr = df['mean_success_rate'].iloc[-1] if len(df) > 0 else 0
-                if final_sr > best_sr:
-                    best_sr = final_sr
+                # Use peak SR instead of final row (handles collapsed runs)
+                peak_sr = df['mean_success_rate'].max() if len(df) > 0 else 0
+                if peak_sr > best_sr:
+                    best_sr = peak_sr
                     best_seed = seed
 
         if best_seed is None:
             print(f'  No model found for {algo_name}, skipping.')
             continue
 
-        model_path = os.path.join(MODEL_DIR, f'{algo_name}_cfg00_seed{best_seed}')
-        norm_path  = os.path.join(NORM_DIR,  f'{algo_name}_cfg00_seed{best_seed}_vecnorm.pkl')
+        # Prefer the best-checkpoint model
+        base_model_path = os.path.join(MODEL_DIR, f'{algo_name}_cfg00_seed{best_seed}')
+        base_norm_path  = os.path.join(NORM_DIR,  f'{algo_name}_cfg00_seed{best_seed}_vecnorm.pkl')
+        best_model_file = base_model_path + '_best'
+        best_norm_file  = base_norm_path.replace('.pkl', '_best.pkl')
+
+        if os.path.exists(best_model_file + '.zip'):
+            model_path = best_model_file
+            norm_path  = best_norm_file if os.path.exists(best_norm_file) else base_norm_path
+        else:
+            model_path = base_model_path
+            norm_path  = base_norm_path
 
         with warnings.catch_warnings():
             warnings.filterwarnings('ignore')
