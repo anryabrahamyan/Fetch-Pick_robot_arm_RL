@@ -14,9 +14,6 @@ import warnings
 import logging
 import itertools
 
-# Fix for MuJoCo headless offscreen rendering (must be set before gymnasium/mujoco imports)
-os.environ["MUJOCO_GL"] = "egl"
-
 # Suppress all warnings including gymnasium's observation space checker
 warnings.filterwarnings('ignore')
 logging.getLogger('gymnasium').setLevel(logging.ERROR)
@@ -326,7 +323,7 @@ def main():
                             train_env.norm_reward = False
                             print(f"[VecNormalize] Loaded existing stats from {norm_path}")
                         else:
-                            train_env = VecNormalize(train_env, norm_obs=True, norm_reward=False, clip_obs=5.0, norm_obs_keys=['observation'])
+                            train_env = VecNormalize(train_env, norm_obs=True, norm_reward=False, clip_obs=5.0)
 
                     eval_env_raw = gym.make(ENV_ID)
                     if USE_FEATURE_WRAPPER:
@@ -335,7 +332,7 @@ def main():
                     eval_env_vec = DummyVecEnv([lambda env=eval_env_raw: env])
 
                     if USE_VEC_NORMALIZE:
-                        eval_env_vec = VecNormalize(eval_env_vec, norm_obs=True, norm_reward=False, clip_obs=5.0, training=False, norm_obs_keys=['observation'])
+                        eval_env_vec = VecNormalize(eval_env_vec, norm_obs=True, norm_reward=False, clip_obs=5.0, training=False)
                         # Share the live RunningMeanStd reference so the eval env always
                         # uses up-to-date stats during this run. This is correct for
                         # within-run evaluation; post-training eval uses the saved file.
@@ -354,7 +351,7 @@ def main():
                     if USE_VEC_NORMALIZE:
                         video_env_vec = VecNormalize(
                             video_env_vec, norm_obs=True, norm_reward=False,
-                            clip_obs=5.0, training=False, norm_obs_keys=['observation']
+                            clip_obs=5.0, training=False
                         )
                         video_env_vec.obs_rms = train_env.obs_rms  # same live stats as train/eval
 
