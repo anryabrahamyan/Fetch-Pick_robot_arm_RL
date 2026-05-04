@@ -22,7 +22,7 @@ USE_VEC_NORMALIZE = True
 os.makedirs(VIDEO_DIR, exist_ok=True)
 gym.register_envs(gymnasium_robotics)
 
-def record_video(model_path, norm_path, video_path, n_episodes=3, fps=30):
+def record_video(model_path, norm_path, video_path, n_episodes=5, fps=50):
     print(f"Loading model from {model_path}...")
     
     # Setup environment for rendering
@@ -80,8 +80,15 @@ def main():
             found_models = True
             model_name = file.replace('.zip', '')
             model_path = os.path.join(MODEL_DIR, model_name)
-            norm_path = os.path.join(NORM_DIR, f"{model_name}_vecnorm.pkl")
-            video_path = os.path.join(VIDEO_DIR, f"{model_name}.mp4")
+            
+            # Handle the '_best' suffix correctly for normalization files
+            if model_name.endswith('_best'):
+                base_name = model_name[:-5]
+                norm_path = os.path.join(NORM_DIR, f"{base_name}_vecnorm_best.pkl")
+            else:
+                norm_path = os.path.join(NORM_DIR, f"{model_name}_vecnorm.pkl")
+                
+            video_path = os.path.join(VIDEO_DIR, f"{model_name}_generated.mp4")
             
             record_video(model_path, norm_path, video_path)
             
